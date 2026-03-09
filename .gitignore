@@ -4,5 +4,10 @@ public/uploads
 tsconfig.tsbuildinfo
 desktop.ini
 .env
+.env.local
 _docx_extract/
 _docx_extract.zip
+
+# Local installers/tools (do not commit)
+postgis-pg18-setup.exe
+handle64.exe

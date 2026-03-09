@@ -18,6 +18,9 @@ export default async function AdminPage() {
   const events = await prisma.event.findMany({ take: 10, orderBy: { createdAt: 'desc' } });
   const users = await prisma.user.findMany({ take: 10, orderBy: { createdAt: 'desc' } });
 
+  type EventType = Awaited<ReturnType<typeof prisma.event.findMany>>[0];
+  type UserType = Awaited<ReturnType<typeof prisma.user.findMany>>[0];
+
   return (
     <div className="mx-auto max-w-6xl px-8 py-10">
       <h1 className="text-3xl font-semibold">Admin dashboard</h1>
@@ -40,7 +43,7 @@ export default async function AdminPage() {
         <div className="glass rounded-3xl p-5">
           <h2 className="text-xl font-semibold mb-3">Recent events</h2>
           <ul className="space-y-2 text-sm">
-            {events.map((event) => (
+            {events.map((event: EventType) => (
               <li key={event.id} className="flex items-center justify-between">
                 <span>{event.title}</span>
                 <form action={`/api/admin/events/${event.id}`} method="post">
@@ -53,7 +56,7 @@ export default async function AdminPage() {
         <div className="glass rounded-3xl p-5">
           <h2 className="text-xl font-semibold mb-3">Recent users</h2>
           <ul className="space-y-2 text-sm">
-            {users.map((user) => (
+            {users.map((user: UserType) => (
               <li key={user.id} className="flex items-center justify-between">
                 <span>{user.email}</span>
                 <form action={`/api/admin/users/${user.id}`} method="post">
