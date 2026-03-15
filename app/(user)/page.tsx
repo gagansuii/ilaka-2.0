@@ -1,5 +1,5 @@
-import { MapScreen } from '@/components/MapScreen';
+import { LandingExperience } from '@/components/landing/LandingExperience';
 
 export default function HomePage() {
-  return <MapScreen />;
+  return <LandingExperience />;
 }

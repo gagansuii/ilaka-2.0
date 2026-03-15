@@ -2,40 +2,74 @@
 
 import 'leaflet/dist/leaflet.css';
 import { useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, Circle, Popup } from 'react-leaflet';
+import { Circle, MapContainer, Marker, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import type { EventSummary } from '@/lib/types';
+import { getEventTheme } from '@/lib/event-style';
 
 const defaultCenter: [number, number] = [28.6139, 77.209];
 
-function makeBadgeIcon(badgeIcon: string) {
+function makeMarkerIcon(event: EventSummary, active: boolean) {
+  const theme = getEventTheme(event);
+  const content = event.badgeIcon
+    ? `<img src="${event.badgeIcon}" alt="" onerror="this.remove()" />`
+    : `<span class="map-marker-fallback">${theme.shortLabel.slice(0, 2)}</span>`;
+
   return L.divIcon({
-    html: `<div style="width:38px;height:38px;border-radius:50%;overflow:hidden;border:2.5px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.45);background:#1a1a2e;display:flex;align-items:center;justify-content:center;">
-      <img src="${badgeIcon}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='📍'" />
+    html: `<div class="map-marker ${active ? 'is-active' : ''}" style="--marker-accent:${theme.accent};--marker-strong:${theme.accentStrong};--marker-glow:${theme.markerGlow};">
+      <span class="map-marker-pulse"></span>
+      <span class="map-marker-core">${content}</span>
+      <span class="map-marker-label">${theme.shortLabel}</span>
     </div>`,
     className: '',
-    iconSize: [38, 38],
-    iconAnchor: [19, 19],
-    popupAnchor: [0, -22]
+    iconSize: [120, 54],
+    iconAnchor: [24, 24]
   });
 }
 
 const userIcon = L.divIcon({
-  html: `<div style="width:16px;height:16px;border-radius:50%;background:#7ef9ff;border:3px solid white;box-shadow:0 0 0 3px rgba(126,249,255,0.35);"></div>`,
+  html: `<div style="width:18px;height:18px;border-radius:50%;background:#f7efe4;border:4px solid #0f766e;box-shadow:0 0 0 6px rgba(15,118,110,0.18);"></div>`,
   className: '',
-  iconSize: [16, 16],
-  iconAnchor: [8, 8],
-  popupAnchor: [0, -12]
+  iconSize: [18, 18],
+  iconAnchor: [9, 9]
 });
+
+function RecenterMap({ center }: { center: [number, number] }) {
+  const map = useMap();
+
+  useEffect(() => {
+    map.setView(center, map.getZoom(), { animate: true });
+  }, [center, map]);
+
+  return null;
+}
+
+function MapClickHandler({ onSelectLocation }: { onSelectLocation: (coords: [number, number]) => void }) {
+  useMapEvents({
+    click(event) {
+      onSelectLocation([event.latlng.lat, event.latlng.lng]);
+    }
+  });
+
+  return null;
+}
 
 export function MapView({
   events,
   center,
-  radius
+  radius,
+  previewedEventId,
+  onPreviewEvent,
+  onOpenEvent,
+  onSelectLocation
 }: {
   events: EventSummary[];
   center: [number, number] | null;
   radius: number;
+  previewedEventId?: string | null;
+  onPreviewEvent?: (event: EventSummary) => void;
+  onOpenEvent?: (event: EventSummary) => void;
+  onSelectLocation?: (coords: [number, number]) => void;
 }) {
   useEffect(() => {
     delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -48,47 +82,47 @@ export function MapView({
 
   const mapCenter = center ?? defaultCenter;
 
-  const badgeIcons = useMemo(() => {
-    const map = new Map<string, L.DivIcon>();
+  const markerIcons = useMemo(() => {
+    const iconMap = new Map<string, L.DivIcon>();
     for (const event of events) {
-      if (event.badgeIcon) map.set(event.id, makeBadgeIcon(event.badgeIcon));
+      iconMap.set(event.id, makeMarkerIcon(event, event.id === previewedEventId));
     }
-    return map;
-  }, [events]);
+    return iconMap;
+  }, [events, previewedEventId]);
 
   return (
-    <MapContainer key={mapCenter.join(',')} center={mapCenter} zoom={13} scrollWheelZoom className="h-full w-full">
+    <MapContainer
+      center={mapCenter}
+      zoom={13}
+      zoomControl={false}
+      scrollWheelZoom
+      className="h-full w-full"
+    >
+      <RecenterMap center={mapCenter} />
+      {onSelectLocation ? <MapClickHandler onSelectLocation={onSelectLocation} /> : null}
       <TileLayer
-        attribution='&copy; OpenStreetMap contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        attribution="&copy; OpenStreetMap contributors &copy; CARTO"
+        url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
       />
-      {center && (
+      {center ? (
         <>
-          <Marker position={center} icon={userIcon}>
-            <Popup>Your location</Popup>
-          </Marker>
-          <Circle center={center} radius={radius} pathOptions={{ color: '#7ef9ff', fillOpacity: 0.06, weight: 1.5 }} />
+          <Marker position={center} icon={userIcon} />
+          <Circle center={center} radius={radius} pathOptions={{ color: '#0f766e', fillColor: '#0f766e', fillOpacity: 0.08, weight: 1.5 }} />
         </>
-      )}
+      ) : null}
       {events.map((event) => (
         <Marker
           key={event.id}
           position={[event.latitude, event.longitude]}
-          icon={badgeIcons.get(event.id)}
-        >
-          <Popup>
-            <div className="space-y-1 min-w-[140px]">
-              {event.bannerUrl && (
-                <img src={event.bannerUrl} alt={event.title} style={{ width: '100%', height: '72px', objectFit: 'cover', borderRadius: '6px' }} />
-              )}
-              <p className="font-semibold text-sm">{event.title}</p>
-              <p className="text-xs" style={{ color: '#888' }}>{new Date(event.startTime).toLocaleString()}</p>
-              {event.isPaid && <span className="text-xs bg-yellow-100 text-yellow-700 px-1 rounded">Paid</span>}
-              <br />
-              <a className="text-xs text-blue-600" href={`/events/${event.id}`}>View details →</a>
-            </div>
-          </Popup>
-        </Marker>
+          icon={markerIcons.get(event.id)}
+          eventHandlers={{
+            mouseover: () => onPreviewEvent?.(event),
+            click: () => {
+              onPreviewEvent?.(event);
+              onOpenEvent?.(event);
+            }
+          }}
+        />
       ))}
     </MapContainer>
   );

@@ -8,8 +8,8 @@ const space = Space_Grotesk({ subsets: ['latin'], variable: '--font-space' });
 const fraunces = Fraunces({ subsets: ['latin'], variable: '--font-fraunces' });
 
 export const metadata: Metadata = {
-  title: 'ILAKA',
-  description: 'Location-based community events for your neighborhood.'
+  title: 'ILAKA | Rediscover your neighbourhood',
+  description: 'Cinematic, map-first community discovery for activities, meetups, workshops, and local energy around you.'
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

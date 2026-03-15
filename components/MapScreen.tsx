@@ -1,12 +1,17 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { ArrowUpRight, CalendarClock, LocateFixed, MapPin, Maximize2, Minimize2, Radar, Search, Sparkles, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Slider } from '@/components/ui/slider';
+import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Maximize2, Minimize2, MapPin, Search } from 'lucide-react';
+import { Slider } from '@/components/ui/slider';
+import { SwipeDeck } from '@/components/SwipeDeck';
+import { EventPreviewDrawer } from '@/components/EventPreviewDrawer';
 import type { EventSummary } from '@/lib/types';
+import { EVENT_CATEGORY_OPTIONS, SEARCH_PROMPTS, formatEventDay, formatEventRange, getEventTheme } from '@/lib/event-style';
 
 const MapView = dynamic(
   () => import('@/components/MapView').then((m) => m.MapView),
@@ -20,32 +25,55 @@ export function MapScreen() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [mapExpanded, setMapExpanded] = useState(false);
+  const [promptIndex, setPromptIndex] = useState(0);
+  const [previewedEventId, setPreviewedEventId] = useState<string | null>(null);
+  const [drawerEvent, setDrawerEvent] = useState<EventSummary | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const centerParams = useMemo(() => {
     if (!center) return '';
     return `lat=${center[0]}&lng=${center[1]}&radius=${radius}`;
   }, [center, radius]);
 
+  const featuredEvents = events.slice(0, 6);
+  const previewedEvent = featuredEvents.find((event) => event.id === previewedEventId) ?? featuredEvents[0] ?? null;
+  const radiusLabel = `${(radius / 1000).toFixed(1)} km`;
+
+  const updateLocation = useCallback(async (nextCenter: [number, number]) => {
+    try {
+      await fetch('/api/users/location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude: nextCenter[0], longitude: nextCenter[1], radius })
+      });
+    } catch {
+      // Location sync is best-effort.
+    }
+  }, [radius]);
+
   useEffect(() => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const nextCenter: [number, number] = [pos.coords.latitude, pos.coords.longitude];
-        setCenter(nextCenter);
-        void updateLocation(nextCenter);
-      },
-      async () => {
-        try {
-          const res = await fetch('/api/geo/ip');
-          if (res.ok) {
-            const data = await res.json();
-            const nextCenter: [number, number] = [data.latitude, data.longitude];
-            setCenter(nextCenter);
-            void updateLocation(nextCenter);
-            return;
-          }
-        } catch { /* IP geo unavailable */ }
-        setCenter([28.6139, 77.209]);
+    const resolveFallback = async () => {
+      try {
+        const res = await fetch('/api/geo/ip');
+        if (res.ok) {
+          const data = await res.json();
+          setCenter([data.latitude, data.longitude]);
+          return;
+        }
+      } catch {
+        // IP geo is optional.
       }
+      setCenter([28.6139, 77.209]);
+    };
+
+    if (!('geolocation' in navigator)) {
+      void resolveFallback();
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setCenter([pos.coords.latitude, pos.coords.longitude]),
+      () => void resolveFallback()
     );
   }, []);
 
@@ -54,7 +82,10 @@ export function MapScreen() {
     setLoading(true);
     try {
       const res = await fetch(`/api/events?${centerParams}`);
-      if (!res.ok) { setEvents([]); return; }
+      if (!res.ok) {
+        setEvents([]);
+        return;
+      }
       const data = await res.json();
       setEvents(data.events ?? []);
     } finally {
@@ -68,16 +99,28 @@ export function MapScreen() {
   }, [centerParams, loadEvents]);
 
   useEffect(() => {
-    if (center) void updateLocation(center);
-  }, [radius]);
+    if (!center) return;
+    void updateLocation(center);
+  }, [center, updateLocation]);
 
-  async function updateLocation(nextCenter: [number, number]) {
-    await fetch('/api/users/location', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ latitude: nextCenter[0], longitude: nextCenter[1], radius })
-    });
-  }
+  useEffect(() => {
+    if (query) return;
+    const id = window.setInterval(() => {
+      setPromptIndex((current) => (current + 1) % SEARCH_PROMPTS.length);
+    }, 2600);
+    return () => window.clearInterval(id);
+  }, [query]);
+
+  useEffect(() => {
+    if (!featuredEvents.length) {
+      setPreviewedEventId(null);
+      return;
+    }
+
+    if (!previewedEventId || !featuredEvents.some((event) => event.id === previewedEventId)) {
+      setPreviewedEventId(featuredEvents[0].id);
+    }
+  }, [featuredEvents, previewedEventId]);
 
   async function handleSearch() {
     if (!query || !center) return;
@@ -88,7 +131,10 @@ export function MapScreen() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, latitude: center[0], longitude: center[1], radius })
       });
-      if (!res.ok) { setEvents([]); return; }
+      if (!res.ok) {
+        setEvents([]);
+        return;
+      }
       const data = await res.json();
       setEvents(data.events ?? []);
     } finally {
@@ -96,159 +142,404 @@ export function MapScreen() {
     }
   }
 
+  function previewEvent(event: EventSummary) {
+    setPreviewedEventId(event.id);
+  }
+
+  function openDrawer(event: EventSummary) {
+    setPreviewedEventId(event.id);
+    setDrawerEvent(event);
+    setDrawerOpen(true);
+  }
+
+  const pulseCopy = !center
+    ? 'Finding your ilaaka and pinning the map around you.'
+    : loading
+      ? 'Refreshing nearby markers and local activity.'
+      : featuredEvents.length
+        ? `${featuredEvents.length} live events in range, with the strongest moments pulled forward first.`
+        : 'Nothing public is live yet. Widen the radius or host the first thing worth showing up for.';
+
   return (
-    <div className="min-h-screen pb-24">
-
-      {/* ── Map banner / fullscreen ── */}
-      <div className={mapExpanded ? 'fixed inset-0 z-50' : 'relative h-[45vh]'}>
-        <MapView events={events} center={center} radius={radius} />
-
-        {/* Expand / collapse */}
-        <button
-          onClick={() => setMapExpanded((v) => !v)}
-          className="absolute top-3 right-3 glass rounded-full p-2 hover:bg-white/20 transition-colors"
-          aria-label={mapExpanded ? 'Collapse map' : 'Expand map'}
-        >
-          {mapExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-        </button>
-
-        {/* Fullscreen overlaid controls */}
-        {mapExpanded && (
-          <>
-            <div className="absolute left-3 right-12 top-3 flex gap-2">
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                placeholder="Search activities near you…"
-                className="glass"
-              />
-              <Button onClick={handleSearch} size="sm"><Search className="h-4 w-4" /></Button>
-            </div>
-            <div className="absolute bottom-4 left-4 right-4 glass rounded-2xl p-4">
-              <div className="flex justify-between text-sm mb-2">
-                <span className="font-medium">Radius</span>
-                <span className="text-cyan-400 font-semibold">{(radius / 1000).toFixed(1)} km</span>
-              </div>
-              <Slider value={[radius]} min={1000} max={20000} step={500} onValueChange={(v) => setRadius(v[0] ?? radius)} />
-              <div className="flex justify-between text-xs text-ink/40 dark:text-white/40 mt-1">
-                <span>1 km</span><span>20 km</span>
-              </div>
-            </div>
-            {events.length > 0 && (
-              <div className="absolute top-16 left-3 glass rounded-full px-3 py-1 flex items-center gap-1.5 text-sm">
-                <MapPin className="h-3.5 w-3.5 text-cyan-400" />
-                <span className="font-medium">{events.length}</span>
-                <span className="text-ink/70 dark:text-white/70">event{events.length !== 1 ? 's' : ''} nearby</span>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* ── Below-map content (hidden when fullscreen) ── */}
-      {!mapExpanded && (
-        <div className="px-4 pt-4 space-y-4">
-
-          {/* Search */}
-          <div className="flex gap-2">
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="Search activities near you…"
+    <>
+      {mapExpanded ? (
+        <div className="fixed inset-0 z-50 bg-[var(--bg-deep)]">
+          <div className="relative h-full w-full overflow-hidden">
+            <MapView
+              events={featuredEvents}
+              center={center}
+              radius={radius}
+              previewedEventId={previewedEventId}
+              onPreviewEvent={previewEvent}
+              onOpenEvent={openDrawer}
             />
-            <Button onClick={handleSearch} size="sm"><Search className="h-4 w-4" /></Button>
-          </div>
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(12,18,24,0.18)_0%,rgba(12,18,24,0.02)_40%,rgba(12,18,24,0.4)_100%)]" />
 
-          {/* Radius */}
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex justify-between text-sm mb-2">
-              <span className="font-medium">Search radius</span>
-              <span className="text-cyan-400 font-semibold">{(radius / 1000).toFixed(1)} km</span>
-            </div>
-            <Slider value={[radius]} min={1000} max={20000} step={500} onValueChange={(v) => setRadius(v[0] ?? radius)} />
-            <div className="flex justify-between text-xs text-ink/40 dark:text-white/40 mt-1">
-              <span>1 km</span><span>20 km</span>
-            </div>
-          </div>
-
-          {/* Events nearby */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold text-base flex items-center gap-2">
-                <MapPin className="h-4 w-4 text-cyan-400" />
-                Nearby Events
-              </h2>
-              {!loading && (
-                <span className="text-sm text-ink/50 dark:text-white/50">
-                  {events.length} found
-                </span>
-              )}
+            <div className="absolute left-4 right-4 top-4 flex items-start justify-between gap-3">
+              <Card className="surface-card-strong max-w-2xl rounded-[1.8rem] p-4">
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && void handleSearch()}
+                      placeholder={query ? '' : SEARCH_PROMPTS[promptIndex]}
+                      className="h-14 pl-11 text-base"
+                    />
+                  </div>
+                  <Button size="lg" onClick={() => void handleSearch()} className="w-full md:w-auto">
+                    <Search className="h-4 w-4" />
+                    Search
+                  </Button>
+                </div>
+              </Card>
+              <Button type="button" variant="outline" size="sm" className="h-12 w-12 rounded-full p-0" onClick={() => setMapExpanded(false)}>
+                <Minimize2 className="h-4 w-4" />
+              </Button>
             </div>
 
-            {loading && (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />
-                ))}
-              </div>
-            )}
-
-            {!loading && events.length === 0 && (
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-center text-sm text-ink/50 dark:text-white/50">
-                No events in your area yet. Be the first to host one!
-              </div>
-            )}
-
-            {!loading && events.length > 0 && (
-              <div className="space-y-3">
-                {events.map((event) => (
-                  <a
-                    key={event.id}
-                    href={`/events/${event.id}`}
-                    className="flex gap-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-colors p-3"
-                  >
-                    {event.bannerUrl ? (
-                      <img src={event.bannerUrl} alt={event.title} className="h-16 w-16 rounded-xl object-cover flex-shrink-0" />
-                    ) : (
-                      <div className="h-16 w-16 rounded-xl bg-white/10 flex-shrink-0 flex items-center justify-center text-2xl">
-                        {event.badgeIcon
-                          ? <img src={event.badgeIcon} alt="" className="h-10 w-10 rounded-full object-cover" />
-                          : '📍'}
-                      </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="font-semibold text-sm leading-tight">{event.title}</p>
-                        {event.isPaid && (
-                          <span className="text-xs bg-yellow-400/20 text-yellow-400 px-2 py-0.5 rounded-full flex-shrink-0">Paid</span>
-                        )}
-                      </div>
-                      <p className="text-xs text-ink/50 dark:text-white/50 mt-0.5 line-clamp-2">{event.description}</p>
-                      <p className="text-xs text-ink/40 dark:text-white/40 mt-1">
-                        {new Date(event.startTime).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                        {' · '}
-                        {new Date(event.startTime).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-                        {' · '}
-                        Cap. {event.capacity}
-                      </p>
-                    </div>
-                  </a>
-                ))}
-              </div>
-            )}
+            {previewedEvent ? (
+              <button
+                type="button"
+                onClick={() => openDrawer(previewedEvent)}
+                className="absolute bottom-4 left-4 right-4 rounded-[1.8rem] border border-white/16 bg-[rgba(15,23,42,0.58)] p-4 text-left text-white shadow-[0_18px_44px_rgba(15,23,42,0.2)] backdrop-blur-xl sm:max-w-md"
+              >
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/64">Marker preview</p>
+                <p className="mt-2 text-xl font-semibold">{previewedEvent.title}</p>
+                <p className="mt-1 text-sm text-white/72">
+                  {formatEventDay(previewedEvent.startTime)} / {formatEventRange(previewedEvent.startTime, previewedEvent.endTime)}
+                </p>
+              </button>
+            ) : null}
           </div>
         </div>
-      )}
+      ) : null}
 
-      {/* Create event FAB */}
-      <Button
-        className="fixed bottom-6 right-6 h-14 w-14 rounded-full text-xl z-40 shadow-lg"
-        onClick={() => (window.location.href = '/events/new')}
-      >
-        +
-      </Button>
-    </div>
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-8 px-4 pb-24 pt-6 sm:px-6 lg:px-8">
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_360px]">
+          <section className="section-shell relative overflow-hidden p-5 sm:p-6 lg:p-8">
+            <div className="absolute inset-x-0 top-0 h-36 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.42),transparent_72%)]" />
+            <div className="relative space-y-6">
+              <div className="space-y-4">
+                <p className="eyebrow">
+                  <Radar className="h-3.5 w-3.5" />
+                  Hyperlocal field guide
+                </p>
+                <h1 className="max-w-3xl font-[family:var(--font-fraunces)] text-4xl leading-[0.94] sm:text-5xl lg:text-[3.85rem]">
+                  Discover the kind of things that make a neighborhood feel alive.
+                </h1>
+                <p className="max-w-2xl text-[15px] leading-7 text-muted sm:text-base">
+                  The map stays central, the markers stay lively, and every strong signal can open into a quick drawer without breaking your flow.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && void handleSearch()}
+                      placeholder={query ? '' : SEARCH_PROMPTS[promptIndex]}
+                      className="h-14 pl-11 text-base"
+                    />
+                  </div>
+                  <Button size="lg" onClick={() => void handleSearch()} className="w-full md:w-auto">
+                    <Search className="h-4 w-4" />
+                    Search nearby
+                  </Button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {EVENT_CATEGORY_OPTIONS.map((category) => (
+                    <button
+                      key={category.key}
+                      type="button"
+                      className="info-pill px-3 py-1.5 text-xs"
+                      onClick={() => setQuery(category.hint)}
+                      style={{ background: category.accentSoft, color: category.accentStrong }}
+                    >
+                      {category.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <span className="info-pill">
+                    <LocateFixed className="h-4 w-4 text-[var(--secondary)]" />
+                    {center ? 'Location locked' : 'Finding your map'}
+                  </span>
+                  <span className="info-pill">
+                    <MapPin className="h-4 w-4 text-[var(--accent)]" />
+                    {featuredEvents.length} live events
+                  </span>
+                  <span className="info-pill">
+                    <CalendarClock className="h-4 w-4 text-[var(--secondary)]" />
+                    Radius {radiusLabel}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+                <div className="overflow-hidden rounded-[2.2rem] border border-[var(--line)] bg-[rgba(12,18,24,0.08)] shadow-[0_24px_80px_rgba(15,23,42,0.14)]">
+                  <div className="relative h-[420px] sm:h-[500px]">
+                    <MapView
+                      events={featuredEvents}
+                      center={center}
+                      radius={radius}
+                      previewedEventId={previewedEventId}
+                      onPreviewEvent={previewEvent}
+                      onOpenEvent={openDrawer}
+                    />
+                    <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(12,18,24,0.1)_0%,rgba(12,18,24,0.02)_40%,rgba(12,18,24,0.34)_100%)]" />
+
+                    <div className="pointer-events-none absolute left-4 right-4 top-4 flex items-start justify-between gap-3">
+                      <Card className="surface-card-strong pointer-events-auto max-w-md rounded-[1.6rem] p-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--secondary)]">
+                          Neighborhood pulse
+                        </p>
+                        <p className="mt-2 text-sm leading-6 text-muted">{pulseCopy}</p>
+                      </Card>
+                      <Button type="button" variant="outline" size="sm" className="pointer-events-auto h-11 w-11 rounded-full p-0" onClick={() => setMapExpanded(true)}>
+                        <Maximize2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+
+                    {previewedEvent ? (
+                      <button
+                        type="button"
+                        onClick={() => openDrawer(previewedEvent)}
+                        className="absolute bottom-4 left-4 right-4 rounded-[1.8rem] border border-white/16 bg-[rgba(15,23,42,0.58)] p-4 text-left text-white shadow-[0_18px_44px_rgba(15,23,42,0.2)] backdrop-blur-xl sm:max-w-md"
+                      >
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/64">Marker preview</p>
+                        <p className="mt-2 text-xl font-semibold">{previewedEvent.title}</p>
+                        <p className="mt-1 text-sm text-white/72">
+                          {formatEventDay(previewedEvent.startTime)} / {formatEventRange(previewedEvent.startTime, previewedEvent.endTime)}
+                        </p>
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <Card className="surface-card-strong overflow-hidden p-0">
+                    {previewedEvent ? (
+                      <>
+                        <button type="button" className="w-full text-left" onClick={() => openDrawer(previewedEvent)}>
+                          <div className="relative h-48 overflow-hidden">
+                            {previewedEvent.bannerUrl ? (
+                              <img src={previewedEvent.bannerUrl} alt={previewedEvent.title} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="h-full w-full" style={{ background: `linear-gradient(135deg, ${getEventTheme(previewedEvent).accentStrong} 0%, ${getEventTheme(previewedEvent).accent} 100%)` }} />
+                            )}
+                            <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(15,23,42,0.04)_14%,rgba(15,23,42,0.72)_100%)]" />
+                            <div className="absolute left-4 right-4 bottom-4 text-white">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/68">{getEventTheme(previewedEvent).label}</p>
+                              <h2 className="mt-2 text-2xl font-semibold leading-tight">{previewedEvent.title}</h2>
+                            </div>
+                          </div>
+                        </button>
+                        <div className="space-y-4 p-5">
+                          <p className="text-sm leading-6 text-muted">{getEventTheme(previewedEvent).previewLine}</p>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <Button type="button" size="lg" onClick={() => openDrawer(previewedEvent)}>Open drawer</Button>
+                            <Button asChild variant="outline" size="lg">
+                              <Link href={`/events/${previewedEvent.id}`}>Full page</Link>
+                            </Button>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="p-5 text-sm leading-6 text-muted">Hover a marker or tap a card to preview it here.</div>
+                    )}
+                  </Card>
+
+                  <Card className="surface-card-strong overflow-hidden p-0">
+                    <div className="bg-[linear-gradient(140deg,rgba(106,136,123,0.92)_0%,rgba(184,111,79,0.9)_100%)] p-5 text-white">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/72">Discovery control</p>
+                      <h2 className="mt-3 font-[family:var(--font-fraunces)] text-3xl leading-none">Let the map breathe.</h2>
+                      <p className="mt-3 text-sm leading-6 text-white/78">Keep the radius tight for serendipity or widen it when you want a fuller neighborhood picture.</p>
+                    </div>
+                    <div className="space-y-5 p-5">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium text-muted">Search radius</span>
+                        <span className="font-semibold text-[var(--accent)]">{radiusLabel}</span>
+                      </div>
+                      <div>
+                        <Slider value={[radius]} min={1000} max={20000} step={500} onValueChange={(value) => setRadius(value[0] ?? radius)} />
+                        <div className="mt-2 flex justify-between text-xs text-muted">
+                          <span>1 km</span>
+                          <span>20 km</span>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                </div>
+              </div>
+
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {featuredEvents.map((event) => {
+                  const theme = getEventTheme(event);
+                  return (
+                    <button
+                      key={event.id}
+                      type="button"
+                      onMouseEnter={() => previewEvent(event)}
+                      onFocus={() => previewEvent(event)}
+                      onClick={() => openDrawer(event)}
+                      className="min-w-[220px] rounded-[1.75rem] border border-[var(--line)] bg-[rgba(255,255,255,0.42)] p-4 text-left transition duration-200 hover:-translate-y-1 hover:bg-[var(--surface-strong)] dark:bg-[rgba(15,23,42,0.24)]"
+                    >
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em]" style={{ color: theme.accentStrong }}>
+                        {theme.label}
+                      </p>
+                      <h3 className="mt-2 text-lg font-semibold leading-tight">{event.title}</h3>
+                      <p className="mt-3 text-xs uppercase tracking-[0.18em] text-muted">
+                        {formatEventDay(event.startTime)} / {formatEventRange(event.startTime, event.endTime)}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
+
+          <aside className="space-y-6">
+            <Card className="space-y-4">
+              <div className="space-y-3">
+                <p className="eyebrow">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Mobile swipe
+                </p>
+                <h2 className="text-2xl font-semibold">Keep discovery playful.</h2>
+                <p className="text-sm leading-6 text-muted">
+                  Swipe through the strongest picks when you want a faster pass without losing the warmth of the map.
+                </p>
+              </div>
+              <SwipeDeck events={featuredEvents} loading={loading} />
+            </Card>
+
+            <Card className="surface-card-strong overflow-hidden p-0">
+              <div className="p-5 sm:p-6">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--accent)]">Host something</p>
+                <h2 className="mt-3 font-[family:var(--font-fraunces)] text-3xl leading-none">
+                  Turn a good local idea into a real invitation.
+                </h2>
+                <p className="mt-3 text-sm leading-6 text-muted">
+                  The creation flow now behaves more like a small creative studio, with live previews and better visual feedback.
+                </p>
+                <div className="mt-5">
+                  <Button asChild size="lg">
+                    <Link href="/events/new">
+                      <Sparkles className="h-4 w-4" />
+                      Create an event
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </aside>
+        </div>
+
+        <section className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="eyebrow">
+                <MapPin className="h-3.5 w-3.5" />
+                Around you now
+              </p>
+              <h2 className="mt-3 font-[family:var(--font-fraunces)] text-4xl leading-none">
+                A calmer list view when you want to compare.
+              </h2>
+            </div>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/events/new">Create your own</Link>
+            </Button>
+          </div>
+
+          {loading ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="h-[260px] animate-pulse rounded-[2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.34)] dark:bg-[rgba(15,23,42,0.28)]" />
+              ))}
+            </div>
+          ) : null}
+
+          {!loading && featuredEvents.length ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {featuredEvents.map((event) => {
+                const theme = getEventTheme(event);
+                return (
+                  <article key={event.id} className="overflow-hidden rounded-[2rem] border border-[var(--line)] bg-[var(--surface)] shadow-[0_24px_70px_rgba(17,24,39,0.12)] transition-all duration-200 hover:-translate-y-1 hover:bg-[var(--surface-strong)]" onMouseEnter={() => previewEvent(event)}>
+                    <button type="button" className="block w-full text-left" onClick={() => openDrawer(event)}>
+                      <div className="relative h-52 overflow-hidden">
+                        {event.bannerUrl ? (
+                          <img src={event.bannerUrl} alt={event.title} className="h-full w-full object-cover transition-transform duration-500 hover:scale-105" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-5xl text-white" style={{ background: `linear-gradient(135deg, ${theme.accentStrong} 0%, ${theme.accent} 100%)` }}>
+                            {event.title.charAt(0)}
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(15,23,42,0.04)_18%,rgba(15,23,42,0.68)_100%)]" />
+                        <div className="absolute left-4 right-4 top-4 flex items-start justify-between gap-3">
+                          <span className="rounded-full bg-white/86 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-800">{theme.label}</span>
+                          <span className="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em]" style={{ background: theme.accentSoft, color: theme.accentStrong }}>
+                            {formatEventDay(event.startTime)}
+                          </span>
+                        </div>
+                        <div className="absolute inset-x-0 bottom-0 p-4 text-white">
+                          <h3 className="text-2xl font-semibold leading-tight">{event.title}</h3>
+                          <p className="mt-1 text-sm text-white/72">{theme.previewLine}</p>
+                        </div>
+                      </div>
+                    </button>
+
+                    <div className="space-y-4 p-5">
+                      <p className="line-clamp-3 text-sm leading-6 text-muted">{event.description}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="info-pill px-3 py-1.5 text-xs">
+                          <CalendarClock className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+                          {formatEventRange(event.startTime, event.endTime)}
+                        </span>
+                        <span className="info-pill px-3 py-1.5 text-xs">
+                          <Users className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+                          Cap {event.capacity}
+                        </span>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Button type="button" variant="outline" size="sm" onClick={() => openDrawer(event)}>
+                          Quick view
+                        </Button>
+                        <Button asChild size="sm">
+                          <Link href={`/events/${event.id}`}>Open full page</Link>
+                        </Button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : null}
+        </section>
+
+        <Button asChild className="fixed bottom-5 right-5 z-40 lg:hidden">
+          <Link href="/events/new">
+            <Sparkles className="h-4 w-4" />
+            Host
+          </Link>
+        </Button>
+      </div>
+
+      <EventPreviewDrawer
+        event={drawerEvent}
+        open={drawerOpen}
+        onOpenChange={(open) => {
+          setDrawerOpen(open);
+          if (!open) setDrawerEvent(null);
+        }}
+      />
+    </>
   );
 }
+

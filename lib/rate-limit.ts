@@ -7,28 +7,63 @@ const cache = new LRUCache<string, number>({
 });
 
 let redis: Redis | null = null;
-function getRedis() {
-  if (redis === null && process.env.REDIS_URL) {
-    redis = new Redis(process.env.REDIS_URL);
+let redisEnabled = Boolean(process.env.REDIS_URL);
+let redisWarningShown = false;
+
+function disableRedis(err?: unknown) {
+  if (!redisWarningShown) {
+    redisWarningShown = true;
+    if (err) {
+      console.warn('Redis unavailable, falling back to in-memory rate limiting.', err);
+    } else {
+      console.warn('Redis unavailable, falling back to in-memory rate limiting.');
+    }
   }
+
+  redisEnabled = false;
+  if (redis) {
+    redis.disconnect();
+    redis = null;
+  }
+}
+
+function getRedis() {
+  if (!redisEnabled || !process.env.REDIS_URL) {
+    return null;
+  }
+
+  if (redis === null) {
+    redis = new Redis(process.env.REDIS_URL, {
+      lazyConnect: true,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+      retryStrategy: () => null,
+      reconnectOnError: () => false
+    });
+    redis.on('error', (err) => {
+      disableRedis(err);
+    });
+  }
+
   return redis;
 }
 
-// rateLimit returns a promise for the caller to await.  if a Redis
-// connection is provided via REDIS_URL we use it (scaled across instances);
-// otherwise we fall back to an in‑memory LRU cache with a warning log.
+// Prefer Redis when it is configured and reachable; otherwise use memory without spamming retries.
 export async function rateLimit(key: string, limit = 60): Promise<boolean> {
   const r = getRedis();
   if (r) {
     try {
+      if (r.status === 'wait') {
+        await r.connect();
+      }
+
       const count = await r.incr(key);
       if (count === 1) {
         await r.expire(key, 60);
       }
       return count <= limit;
     } catch (err) {
-      console.error('Redis rateLimit error, falling back to memory', err);
-      // fall through to memory code
+      disableRedis(err);
     }
   }
 

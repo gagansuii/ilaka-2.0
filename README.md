@@ -10,6 +10,8 @@ payment support.
    ```bash
    cp .env.example .env
    # edit values (especially DATABASE_URL, NEXTAUTH_SECRET, etc.)
+   # for local Postgres, use sslmode=disable unless your server explicitly requires TLS
+   # leave REDIS_URL blank unless a Redis server is running
    ```
 
 2. **Install dependencies**
